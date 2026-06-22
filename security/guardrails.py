@@ -1,0 +1,155 @@
+"""
+Reconcile — Security Guardrail (before_tool_callback)
+=====================================================
+
+DESIGN INTENT
+-------------
+This is the single enforcement point that runs BEFORE every tool call made by
+any agent. It implements three of the four security layers from the design doc:
+
+    1. LEAST-PRIVILEGE SCOPING  — default-deny against tool_scopes.TOOL_SCOPES.
+    2. AMOUNT THRESHOLD         — any money-moving call >= threshold is forced
+                                  to the human gate, even if upstream "thought"
+                                  it was safe.
+    3. PII MASKING              — account numbers / personal identifiers are
+                                  redacted before any value can reach a log.
+
+ADK CONTRACT (verified against current docs)
+--------------------------------------------
+- ADK passes callback args BY KEYWORD. The parameter names MUST be exactly
+  `tool`, `args`, `tool_context` — renaming them raises TypeError at runtime.
+- Returning a dict SKIPS the tool's execution and uses the dict as the tool
+  result. We use that to BLOCK a disallowed/over-threshold call and feed a
+  structured "denied" result back to the model.
+- Returning None ALLOWS the tool to proceed normally.
+
+This callback is attached to EVERY agent via `before_tool_callback=`.
+"""
+
+from __future__ import annotations
+
+import re
+import copy
+from typing import Any, Optional
+
+from google.adk.tools.tool_context import ToolContext
+from google.adk.tools.base_tool import BaseTool
+
+from mcp_server.tool_scopes import (
+    Tool,
+    is_allowed,
+    GATED_TOOLS,
+    AMOUNT_CONFIRMATION_THRESHOLD_CENTS,
+)
+
+# --- PII patterns -----------------------------------------------------------
+# Conservative redaction. We mask anything that looks like a bank account /
+# routing number or a long digit run. Better to over-mask a log than to leak.
+_ACCOUNT_PATTERNS = [
+    re.compile(r"\b\d{8,17}\b"),          # raw account-ish digit runs
+    re.compile(r"\b\d{9}\b"),             # routing numbers (9 digits)
+    re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), # SSN-shaped
+]
+_PII_KEYS = {"account_number", "routing_number", "ssn", "tax_id", "iban"}
+
+
+def _mask_text(text: str) -> str:
+    """Redact account-like digit sequences from a free-text string."""
+    masked = text
+    for pat in _ACCOUNT_PATTERNS:
+        masked = pat.sub("***REDACTED***", masked)
+    return masked
+
+
+def mask_pii(value: Any) -> Any:
+    """Recursively redact PII from arbitrary tool args (dict/list/str).
+
+    Exposed as a module function so confirmation.py and any log writer can
+    reuse the EXACT same masking logic — one definition, no drift."""
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if k in _PII_KEYS:
+                out[k] = "***REDACTED***"
+            else:
+                out[k] = mask_pii(v)
+        return out
+    if isinstance(value, list):
+        return [mask_pii(v) for v in value]
+    if isinstance(value, str):
+        return _mask_text(value)
+    return value
+
+
+def _denied(reason: str, **extra: Any) -> dict:
+    """Build the structured result returned to the model when a call is
+    blocked. Returning a dict from before_tool_callback skips the tool."""
+    return {"status": "DENIED", "reason": reason, **extra}
+
+
+def security_guardrail(
+    *,
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+) -> Optional[dict]:
+    """The before_tool_callback enforced on every agent.
+
+    Returns:
+        - dict  -> BLOCK the tool; the dict becomes the tool result.
+        - None  -> ALLOW the tool to execute normally.
+    """
+    agent_name = tool_context.agent_name
+    tool_name = tool.name
+
+    # --- (0) Resolve tool name to the canonical enum --------------------
+    # Unknown tool names fail closed: if it isn't in our enum, deny it.
+    try:
+        tool_enum = Tool(tool_name)
+    except ValueError:
+        return _denied(
+            f"Unknown tool '{tool_name}' is not part of the Reconcile tool set.",
+            tool=tool_name, agent=agent_name,
+        )
+
+    # --- (1) LEAST-PRIVILEGE SCOPING (default-deny) --------------------
+    if not is_allowed(agent_name, tool_enum):
+        # Log the violation to session state so the NarrativeAgent can report
+        # attempted privilege escalations in the audit summary.
+        violations = tool_context.state.get("privilege_violations", [])
+        violations.append({"agent": agent_name, "tool": tool_name})
+        tool_context.state["privilege_violations"] = violations
+        return _denied(
+            f"Agent '{agent_name}' is not permitted to call '{tool_name}'. "
+            f"This call was blocked by the least-privilege guardrail.",
+            agent=agent_name, tool=tool_name,
+        )
+
+    # --- (2) AMOUNT THRESHOLD on money-moving calls --------------------
+    # If a gated tool is somehow about to run with a large amount and is NOT
+    # already carrying a confirmation, force it back through the human gate.
+    if tool_enum in GATED_TOOLS:
+        amount = args.get("amount_cents")
+        confirmed = getattr(tool_context, "tool_confirmation", None)
+        if isinstance(amount, int) and amount >= AMOUNT_CONFIRMATION_THRESHOLD_CENTS:
+            if not (confirmed and getattr(confirmed, "confirmed", False)):
+                return _denied(
+                    f"Adjustment of {amount} cents meets/exceeds the "
+                    f"{AMOUNT_CONFIRMATION_THRESHOLD_CENTS}-cent threshold and "
+                    f"requires explicit human confirmation before posting.",
+                    requires_confirmation=True,
+                    amount_cents=amount,
+                )
+
+    # --- (3) PII MASKING of args before they can be logged -------------
+    # We mask a COPY placed in session state for logging. We do NOT mutate the
+    # live `args` the tool will execute with (the ERP needs the real account
+    # number) — only the loggable view is redacted. This is the key nuance:
+    # mask what is OBSERVED, not what is EXECUTED.
+    safe_view = mask_pii(copy.deepcopy(args))
+    call_log = tool_context.state.get("tool_call_log", [])
+    call_log.append({"agent": agent_name, "tool": tool_name, "args": safe_view})
+    tool_context.state["tool_call_log"] = call_log
+
+    # None => allow the tool to proceed.
+    return None
