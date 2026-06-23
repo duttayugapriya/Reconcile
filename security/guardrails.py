@@ -102,15 +102,24 @@ def security_guardrail(
     agent_name = tool_context.agent_name
     tool_name = tool.name
 
-    # --- (0) Resolve tool name to the canonical enum --------------------
-    # Unknown tool names fail closed: if it isn't in our enum, deny it.
+        # --- (0) Resolve tool name to the canonical MCP enum ----------------
+    # Tools NOT in the MCP enum are the orchestrator's own non-MCP tools
+    # (the gated post_adjustment FunctionTool and the ClosePipeline AgentTool).
+    # These are allowed to pass; the gated tool enforces its own human gate,
+    # and the AgentTool merely runs the pipeline (whose sub-agents are each
+    # independently guardrailed). Genuinely unknown MCP-style calls still fail
+    # closed below via the scope check.
+    _ORCHESTRATOR_OWNED = {"post_adjustment_gated", "ClosePipeline"}
     try:
         tool_enum = Tool(tool_name)
     except ValueError:
+        if tool_name in _ORCHESTRATOR_OWNED:
+            return None  # allow; the gated tool self-enforces confirmation
         return _denied(
             f"Unknown tool '{tool_name}' is not part of the Reconcile tool set.",
             tool=tool_name, agent=agent_name,
         )
+
 
     # --- (1) LEAST-PRIVILEGE SCOPING (default-deny) --------------------
     if not is_allowed(agent_name, tool_enum):
