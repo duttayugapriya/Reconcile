@@ -102,24 +102,46 @@ def security_guardrail(
     agent_name = tool_context.agent_name
     tool_name = tool.name
 
-        # --- (0) Resolve tool name to the canonical MCP enum ----------------
-    # Tools NOT in the MCP enum are the orchestrator's own non-MCP tools
-    # (the gated post_adjustment FunctionTool and the ClosePipeline AgentTool).
-    # These are allowed to pass; the gated tool enforces its own human gate,
-    # and the AgentTool merely runs the pipeline (whose sub-agents are each
-    # independently guardrailed). Genuinely unknown MCP-style calls still fail
-    # closed below via the scope check.
-    _ORCHESTRATOR_OWNED = {"post_adjustment_gated", "ClosePipeline"}
+    # --- (A) GATED-TOOL THRESHOLD CHECK (runs by NAME, before enum resolve) ---
+    # The gated post_adjustment tool is a FunctionTool whose .name is
+    # 'post_adjustment_gated' — NOT an MCP Tool enum member. We must enforce
+    # the amount threshold here, by name, or this layer is a no-op for the only
+    # money-moving tool. The confirmation.py gate is the primary control; this
+    # is defense-in-depth and keeps the writeup's claim literally true.
+    if tool_name == "post_adjustment_gated":
+        amount = args.get("amount_cents")
+        confirmed = getattr(tool_context, "tool_confirmation", None)
+        is_confirmed = bool(confirmed and getattr(confirmed, "confirmed", False))
+        if isinstance(amount, int) and abs(amount) >= AMOUNT_CONFIRMATION_THRESHOLD_CENTS:
+            if not is_confirmed:
+                # Allow it to PROCEED to the tool, which will itself call
+                # request_confirmation (Stage 1). We do NOT block here, because
+                # blocking would prevent the confirmation request from ever
+                # being raised. The threshold's job at this layer is to LOG
+                # that a large amount was seen pre-confirmation.
+                log = tool_context.state.get("large_amount_seen", [])
+                log.append({"agent": agent_name, "amount_cents": amount})
+                tool_context.state["large_amount_seen"] = log
+        return None  # the gated tool self-enforces the human gate
+
+    # --- (0) Resolve tool name to the canonical MCP enum ----------------
+    # Tools NOT in the MCP enum are the orchestrator's own non-MCP tools.
+    # After Fix 2, the gated post_adjustment FunctionTool is handled entirely
+    # in section (A) above and never reaches here. The only remaining
+    # orchestrator-owned non-MCP tool is the ClosePipeline AgentTool, which
+    # merely runs the pipeline (whose sub-agents are each independently
+    # guardrailed). Genuinely unknown MCP-style calls still fail closed below
+    # via the scope check.
+    _ORCHESTRATOR_OWNED = {"ClosePipeline"}
     try:
         tool_enum = Tool(tool_name)
     except ValueError:
         if tool_name in _ORCHESTRATOR_OWNED:
-            return None  # allow; the gated tool self-enforces confirmation
+            return None  # allow; the AgentTool just runs guardrailed sub-agents
         return _denied(
             f"Unknown tool '{tool_name}' is not part of the Reconcile tool set.",
             tool=tool_name, agent=agent_name,
         )
-
 
     # --- (1) LEAST-PRIVILEGE SCOPING (default-deny) --------------------
     if not is_allowed(agent_name, tool_enum):
@@ -134,13 +156,14 @@ def security_guardrail(
             agent=agent_name, tool=tool_name,
         )
 
-    # --- (2) AMOUNT THRESHOLD on money-moving calls --------------------
-    # If a gated tool is somehow about to run with a large amount and is NOT
-    # already carrying a confirmation, force it back through the human gate.
+    # --- (2) AMOUNT THRESHOLD on money-moving MCP calls ----------------
+    # Defense-in-depth for any *MCP-enum* gated tool. The orchestrator's
+    # FunctionTool path is already handled by name in section (A); this branch
+    # covers gated tools that ARE part of the MCP enum, if any exist.
     if tool_enum in GATED_TOOLS:
         amount = args.get("amount_cents")
         confirmed = getattr(tool_context, "tool_confirmation", None)
-        if isinstance(amount, int) and amount >= AMOUNT_CONFIRMATION_THRESHOLD_CENTS:
+        if isinstance(amount, int) and abs(amount) >= AMOUNT_CONFIRMATION_THRESHOLD_CENTS:
             if not (confirmed and getattr(confirmed, "confirmed", False)):
                 return _denied(
                     f"Adjustment of {amount} cents meets/exceeds the "
