@@ -59,7 +59,7 @@ When asked to close a period (e.g. "close 2026-05"):
 
 2. Read 'anomaly_result'. It contains a 'proposed_adjustments' list. Process
    the adjustments STRICTLY ONE AT A TIME. For ONE proposed adjustment, call:
-       post_adjustment(entry_txn_id=..., amount_cents=..., reason=...)
+       post_adjustment_gated(entry_txn_id=..., amount_cents=..., reason=...)
    This tool will PAUSE and ask the human to approve or reject. WAIT for its
    result before calling it again for the NEXT proposed adjustment. Do not
    batch multiple adjustments into one turn, and do not invent your own posting
