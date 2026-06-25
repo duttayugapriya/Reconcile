@@ -230,7 +230,7 @@ if __name__ == "__main__":
           f"(seed={SEED}, period={PERIOD}).")
     print("Planted anomalies: duplicate $12,400, miscategorized $40,127, "
           "vendor-name mismatch $3,250.")
-        con.commit()
+    con.commit()
     con.close()
     print(f"Wrote {len(txns)} transactions + {len(VENDOR_MASTER)} vendors "
           f"to {DB_PATH}")
