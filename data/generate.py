@@ -219,17 +219,7 @@ def write_db(txns: list[Txn]) -> None:
         "INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?)",
         [tuple(asdict(t).values()) for t in txns],
     )
-    con.commit()
-    con.close()
 
-
-if __name__ == "__main__":
-    data = generate()
-    write_db(data)
-    print(f"Wrote {len(data)} transactions to {DB_PATH} "
-          f"(seed={SEED}, period={PERIOD}).")
-    print("Planted anomalies: duplicate $12,400, miscategorized $40,127, "
-          "vendor-name mismatch $3,250.")
     con.commit()
     con.close()
     print(f"Wrote {len(txns)} transactions + {len(VENDOR_MASTER)} vendors "
@@ -239,4 +229,3 @@ if __name__ == "__main__":
 if __name__ == "__main__":
     # Deterministic rebuild. Safe to run repeatedly; the DB is dropped first.
     write_db(generate())
-
