@@ -64,6 +64,10 @@ def post_adjustment_gated(
     # --- STAGE 1: no decision yet -> request human confirmation --------
     if not confirmation:
         # Build a clear, auditable hint. Mask in case the reason carries PII.
+        # The threshold check is a defense-in-depth indicator in the hint payload.
+        # Note that every post_adjustment is gated regardless of amount, so this
+        # indicator highlights high-value requests in the approval UI rather than
+        # acting as an independent gating trigger.
         over_threshold = abs(amount_cents) >= AMOUNT_CONFIRMATION_THRESHOLD_CENTS
         hint = (
             f"APPROVAL REQUIRED — post_adjustment\n"
