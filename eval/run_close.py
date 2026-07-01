@@ -39,8 +39,13 @@ def _decide(payload_hint: str) -> tuple[bool, dict]:
     """
     is_reversal = "reversal" in payload_hint.lower()
     if is_reversal:
-        return True, {"approved": True, "approved_amount_cents": 0}
-    return False, {"approved": False, "approved_amount_cents": 0}
+        payload = {"approved": True}
+        import re
+        match = re.search(r"Amount\s*:\s*(-?\d+)\s+cents", payload_hint)
+        if match:
+            payload["approved_amount_cents"] = int(match.group(1))
+        return True, payload
+    return False, {"approved": False}
 
 
 async def main() -> None:
@@ -58,6 +63,8 @@ async def main() -> None:
     pending = await _run_until_pause(runner, session.id, msg)
 
     # Resolve each confirmation request, resuming the invocation each time.
+    import json
+
     while pending is not None:
         fc_id, hint = pending
         confirmed, payload = _decide(hint)
@@ -69,7 +76,7 @@ async def main() -> None:
                 function_response=types.FunctionResponse(
                     id=fc_id,
                     name="adk_request_confirmation",
-                    response={"confirmed": confirmed, "payload": payload},
+                    response={"response": json.dumps({"confirmed": confirmed, "payload": payload})},
                 )
             )],
         )

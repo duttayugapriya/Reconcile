@@ -119,11 +119,10 @@ def lookup_vendor(name: str) -> dict:
 # SAFE WRITE — flag only (never moves money)
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def flag_transaction(txn_id: str, reason: str) -> dict:
-    """Mark a transaction for human review. This is a SAFE write: it records a
-    review flag in the audit log but changes no balances and moves no money.
-    Used by the AnomalyAgent to register findings."""
-    _write_audit("AnomalyAgent", "flag_transaction",
+def flag_transaction(txn_id: str, reason: str, actor: str = "AnomalyAgent") -> dict:
+    """Flag a transaction for manual audit/review.
+    Specify the calling actor to ensure correct attribution in the audit trail."""
+    _write_audit(actor, "flag_transaction",
                  json.dumps({"txn_id": txn_id, "reason": reason}))
     return {"status": "flagged", "txn_id": txn_id, "reason": reason}
 

@@ -79,7 +79,7 @@ def post_adjustment_gated(
             hint=hint,
             # payload defines the structured response we expect back. Defaults
             # represent the "rejected / nothing approved" safe state.
-            payload={"approved": False, "approved_amount_cents": 0},
+            payload={"approved": False, "approved_amount_cents": None},
         )
         # Intermediate status — the model sees this only after the turn resumes.
         return {
@@ -89,10 +89,39 @@ def post_adjustment_gated(
         }
 
     # --- STAGE 2: a human decision is present --------------------------
-    payload = confirmation.payload or {}
-    approved = bool(getattr(confirmation, "confirmed", False)) and bool(
-        payload.get("approved", False)
-    )
+    import json
+
+    # Extract confirmed and payload in a robust, version-agnostic way.
+    raw_confirmed = False
+    raw_payload = {}
+
+    if isinstance(confirmation, dict):
+        raw_confirmed = confirmation.get("confirmed", False)
+        raw_payload = confirmation.get("payload") or {}
+    elif confirmation is not None:
+        raw_confirmed = getattr(confirmation, "confirmed", False)
+        raw_payload = getattr(confirmation, "payload", None) or {}
+
+        # Fallback in case ADK wraps or exposes it via a .response attribute
+        if not raw_confirmed and hasattr(confirmation, "response"):
+            resp = getattr(confirmation, "response")
+            if isinstance(resp, dict):
+                raw_confirmed = resp.get("confirmed", False)
+                if not raw_payload:
+                    raw_payload = resp.get("payload") or {}
+            elif isinstance(resp, str):
+                try:
+                    parsed_resp = json.loads(resp)
+                    if isinstance(parsed_resp, dict):
+                        raw_confirmed = parsed_resp.get("confirmed", False)
+                        if not raw_payload:
+                            raw_payload = parsed_resp.get("payload") or {}
+                except Exception:
+                    pass
+
+    # The user confirms either via the top-level flag or the nested payload approved key
+    approved = bool(raw_confirmed) or bool(raw_payload.get("approved", False))
+    payload = raw_payload
 
     if not approved:
         # Rejection path — the $40k "mark for manual review" demo beat.
@@ -109,9 +138,10 @@ def post_adjustment_gated(
 
     # Approval path — honor an optionally human-edited amount, capped to the
     # originally proposed magnitude so approval can only reduce, never inflate.
-    approved_amount = payload.get("approved_amount_cents", amount_cents)
+    raw = payload.get("approved_amount_cents")
+    approved_amount = amount_cents if raw in (None, 0) else raw
     if amount_cents < 0:
-        approved_amount = max(approved_amount, amount_cents)  # don't over-reverse
+        approved_amount = max(approved_amount, amount_cents)   # don't over-reverse
     else:
         approved_amount = min(approved_amount, amount_cents)
 
