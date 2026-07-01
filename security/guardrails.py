@@ -50,6 +50,7 @@ _ACCOUNT_PATTERNS = [
     re.compile(r"\b\d{9}\b"),             # routing numbers (9 digits)
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), # SSN-shaped
 ]
+_ACCOUNT_HYPHEN_SPACE_PATTERN = re.compile(r"\b(?:\d{3,6}[- ]){1,4}\d{3,6}\b")
 _PII_KEYS = {"account_number", "routing_number", "ssn", "tax_id", "iban"}
 
 
@@ -58,6 +59,15 @@ def _mask_text(text: str) -> str:
     masked = text
     for pat in _ACCOUNT_PATTERNS:
         masked = pat.sub("***REDACTED***", masked)
+
+    def _mask_account_match(match: re.Match) -> str:
+        val = match.group(0)
+        digit_count = sum(c.isdigit() for c in val)
+        if 8 <= digit_count <= 17:
+            return "***REDACTED***"
+        return val
+
+    masked = _ACCOUNT_HYPHEN_SPACE_PATTERN.sub(_mask_account_match, masked)
     return masked
 
 

@@ -179,8 +179,20 @@ def write_audit_log(actor: str, action: str, detail: str) -> dict:
 
 
 def _write_audit(actor: str, action: str, detail: str) -> None:
-    """Internal append helper. PII masking is applied in the ADK guardrail
-    BEFORE detail reaches here, so by this point `detail` is already redacted."""
+    """Internal append helper. Ensure PII masking is applied to `detail` before
+    persisting it to the database, to guarantee that no sensitive information reaches
+    the audit DB."""
+    try:
+        from security.guardrails import mask_pii
+        try:
+            parsed = json.loads(detail)
+            masked_parsed = mask_pii(parsed)
+            detail = json.dumps(masked_parsed)
+        except Exception:
+            detail = mask_pii(detail)
+    except Exception:
+        pass
+
     con = _con()
     try:
         con.execute(
