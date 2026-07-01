@@ -121,7 +121,23 @@ def lookup_vendor(name: str) -> dict:
 @mcp.tool()
 def flag_transaction(txn_id: str, reason: str, actor: str = "AnomalyAgent") -> dict:
     """Flag a transaction for manual audit/review.
-    Specify the calling actor to ensure correct attribution in the audit trail."""
+
+    Args:
+        txn_id: The ID of the transaction to flag.
+        reason: Human-readable explanation of why the transaction is flagged.
+        actor: The agent/system triggering the flag. Defaults to "AnomalyAgent".
+
+    DESIGN INTENT & REUSE INTEGRITY:
+    ----------------------------------
+    The MCP server is decoupled from the agent orchestration layer. To ensure
+    correct attribution in the append-only audit log, the caller should pass
+    the `actor` name. The client-side security guardrail intercepts this tool call
+    and dynamically injects the calling agent's name (from tool_context.agent_name)
+    into the `actor` parameter.
+
+    The default is set to "AnomalyAgent" to ensure backward compatibility and avoid
+    breaking agent LLM calls where the LLM does not explicitly pass the actor argument.
+    """
     _write_audit(actor, "flag_transaction",
                  json.dumps({"txn_id": txn_id, "reason": reason}))
     return {"status": "flagged", "txn_id": txn_id, "reason": reason}

@@ -173,6 +173,13 @@ def security_guardrail(
                     amount_cents=amount,
                 )
 
+    # Dynamic Caller Attribution:
+    # If the tool is 'flag_transaction', dynamically inject the calling agent's name
+    # as the `actor` argument. This ensures correct attribution in the audit trail
+    # and prevents reliance on hardcoded defaults when tools are reused.
+    if tool_name == "flag_transaction":
+        args["actor"] = agent_name
+
     # --- (3) PII MASKING of args before they can be logged -------------
     # We mask a COPY placed in session state for logging. We do NOT mutate the
     # live `args` the tool will execute with (the ERP needs the real account
