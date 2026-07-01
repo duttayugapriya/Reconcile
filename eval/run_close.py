@@ -96,10 +96,15 @@ async def _run_until_pause(runner, session_id, message):
         for part in event.content.parts:
             fc = getattr(part, "function_call", None)
             if fc and fc.name == "adk_request_confirmation":
-                hint = ""
                 args = fc.args or {}
-                # The hint is nested in the original confirmation request args.
-                hint = str(args.get("hint") or args)
+                # Extract hint from nested toolConfirmation if present, otherwise top-level or fallback
+                tool_conf = args.get("toolConfirmation")
+                if isinstance(tool_conf, dict):
+                    hint = tool_conf.get("hint") or ""
+                elif "hint" in args:
+                    hint = args["hint"] or ""
+                else:
+                    hint = str(args)
                 return (fc.id, hint)
             if part.text:
                 print(part.text, end="", flush=True)
